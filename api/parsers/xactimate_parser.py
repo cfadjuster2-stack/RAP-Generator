@@ -48,18 +48,19 @@ class XactimateParser:
         try:
             doc = fitz.open(filepath)
             full_text = ""
-            
+
             for page in doc:
                 full_text += page.get_text()
-            
+
             doc.close()
-            
+
             self._extract_header_data(full_text)
             self._extract_line_items_gps_format(full_text)
+            self._remove_duplicate_line_items()
             self._build_categories_from_items()
-            
+
             return self._build_response()
-            
+
         except Exception as e:
             logger.error(f"PyMuPDF parsing failed: {str(e)}")
             return {'success': False, 'error': str(e)}
@@ -69,18 +70,19 @@ class XactimateParser:
         try:
             with pdfplumber.open(filepath) as pdf:
                 full_text = ""
-                
+
                 for page in pdf.pages:
                     text = page.extract_text()
                     if text:
                         full_text += text + "\n"
-            
+
             self._extract_header_data(full_text)
             self._extract_line_items_gps_format(full_text)
+            self._remove_duplicate_line_items()
             self._build_categories_from_items()
-            
+
             return self._build_response()
-            
+
         except Exception as e:
             logger.error(f"pdfplumber parsing failed: {str(e)}")
             return {'success': False, 'error': str(e)}
@@ -300,90 +302,268 @@ class XactimateParser:
         return float(cleaned) if cleaned else 0.0
     
     def _determine_category(self, description: str) -> str:
-        """Determine NFIP category"""
+        """
+        Determine NFIP category with priority-based matching.
+        Priority is important to avoid mis-categorization (e.g., "exterior door" shouldn't match "insulation")
+        """
         desc_upper = description.upper()
-        
-        category_keywords = {
-            'INSULATION': ['INSULATION', 'INSULATE', 'BATT'],
-            'CABINETRY': ['CABINET', 'COUNTER', 'VANITY'],
-            'FINISH CARPENTRY / TRIMWORK': ['FINISH CARPENTRY', 'TRIMWORK', 'CROWN', 'WAINSCOT'],
-            'FINISH HARDWARE': ['FINISH HARDWARE', 'KNOB', 'HANDLE', 'HINGE'],
-            'DOORS': ['DOOR', 'THRESHOLD'],
-            'WINDOWS - SLIDING PATIO DOORS': ['PATIO DOOR', 'SLIDING DOOR'],
-            'WINDOWS - ALUMINUM': ['WINDOW', 'GLASS', 'GLAZING'],
-            'WINDOW TREATMENT': ['WINDOW TREATMENT', 'BLINDS', 'SHADE'],
-            'MIRRORS & SHOWER DOORS': ['MIRROR', 'SHOWER DOOR'],
-            'DRYWALL': ['DRYWALL', 'SHEETROCK', 'GYPSUM'],
-            'STUCCO & EXTERIOR PLASTER': ['STUCCO', 'EXTERIOR PLASTER'],
-            'SOFFIT, FASCIA, & GUTTER': ['SOFFIT', 'FASCIA', 'GUTTER', 'DOWNSPOUT'],
-            'WALLPAPER': ['WALLPAPER'],
-            'FLOOR COVERING - CERAMIC TILE': ['CERAMIC TILE', 'PORCELAIN TILE'],
-            'FLOOR COVERING - CARPET': ['CARPET'],
-            'FLOOR COVERING - STONE': ['STONE FLOOR', 'MARBLE FLOOR', 'GRANITE FLOOR', 'TRAVERTINE'],
-            'FLOOR COVERING - WOOD': ['HARDWOOD', 'WOOD FLOOR', 'OAK FLOOR', 'ENGINEERED WOOD'],
-            'FLOOR COVERING - VINYL': ['VINYL', 'LVP', 'LVT', 'LUXURY VINYL'],
-            'FLOOR COVERING - LAMINATE': ['LAMINATE'],
-            'FLOOR COVERING': ['FLOOR', 'FLOORING'],
-            'TILE': ['TILE', 'REGROUT'],
-            'PAINTING & WOOD WALL FINISHES': ['PAINT', 'PRIMER', 'STAIN', 'WOOD FINISH'],
-            'PANELING & WOOD WALL FINISHES': ['PANEL', 'WOOD PANEL'],
-            'TEXTURE': ['TEXTURE'],
-            'PLUMBING': ['PLUMB', 'WATER', 'DRAIN', 'PIPE', 'FAUCET', 'TOILET', 'SINK'],
-            'ELECTRICAL': ['ELECTRIC', 'OUTLET', 'SWITCH', 'WIRE', 'FIXTURE', 'BREAKER', 'PANEL'],
-            'HVAC': ['HVAC'],
-            'HEAT, VENT & AIR CONDITIONING': ['AIR CONDITION', 'FURNACE', 'DUCT', 'AC UNIT', 'HEAT PUMP', 'CONDENSER'],
-            'APPLIANCES': ['APPLIANCE', 'DISHWASHER', 'RANGE', 'REFRIGERATOR', 'WASHER', 'DRYER'],
-            'LIGHT FIXTURES': ['LIGHT FIXTURE', 'LIGHTING'],
-            'TOILET & BATH ACCESSORIES': ['TOILET ACCESSORY', 'BATH ACCESSORY', 'TOWEL BAR', 'PAPER HOLDER'],
-            'INTERIOR LATH & PLASTER': ['LATH', 'PLASTER'],
-            'TRIM': ['BASEBOARD', 'TRIM', 'MOLDING', 'CASING'],
-            'CLEANING': ['CLEAN', 'MUCK', 'SANITIZE', 'DISINFECT', 'ANTI-MICROBIAL'],
-            'WATER EXTRACTION & REMEDIATION': ['WATER EXTRACTION', 'REMEDIATION', 'STRUCTURAL DRYING'],
-            'GENERAL DEMOLITION': ['DEMO', 'DEMOLITION', 'TEAR OUT', 'DISPOSAL', 'DUMPSTER', 'HAUL'],
-            'TEMPORARY REPAIRS': ['TEMPORARY', 'TARP', 'BOARD UP'],
-        }
-        
-        for category, keywords in category_keywords.items():
-            if any(keyword in desc_upper for keyword in keywords):
-                return category
-        
+
+        # Skip deduction notes and similar non-item entries
+        skip_patterns = ['DEDUCTION', 'DEDUCT FOR', 'LESS ', 'SUBTRACT', 'CREDIT FOR']
+        if any(pattern in desc_upper for pattern in skip_patterns):
+            return 'GENERAL'
+
+        # PRIORITY 1: High-priority categories (specific matches first)
+        # These should be checked first to prevent mis-categorization
+
+        # Water extraction and remediation (check before cleaning)
+        if any(kw in desc_upper for kw in ['WATER EXTRACTION', 'STRUCTURAL DRYING', 'MOISTURE', 'DEHUMID', 'AIR MOVER', 'WATER MITIGATION']):
+            return 'WATER EXTRACTION & REMEDIATION'
+
+        # Cleaning (comprehensive - anything with "clean" goes here)
+        if any(kw in desc_upper for kw in ['CLEAN', 'MUCK OUT', 'SANITIZE', 'DISINFECT', 'ANTI-MICROBIAL', 'ANTIMICROBIAL', 'DEODOR']):
+            return 'CLEANING'
+
+        # General demolition (check before other categories)
+        if any(kw in desc_upper for kw in ['DEMO', 'DEMOLITION', 'TEAR OUT', 'REMOVE ', 'DISPOSAL', 'DUMPSTER', 'HAUL', 'DEBRIS']):
+            return 'GENERAL DEMOLITION'
+
+        # Temporary repairs
+        if any(kw in desc_upper for kw in ['TEMPORARY', 'TARP', 'BOARD UP', 'EMERGENCY']):
+            return 'TEMPORARY REPAIRS'
+
+        # PRIORITY 2: Specific trade categories
+
+        # Doors (check before insulation to catch "insulated door")
+        # Door hardware goes with doors
+        if any(kw in desc_upper for kw in ['DOOR', 'THRESHOLD', 'DOOR HARDWARE', 'DOOR KNOB', 'DOOR HANDLE', 'LOCKSET', 'DEADBOLT']):
+            return 'DOORS'
+
+        # Windows
+        if any(kw in desc_upper for kw in ['PATIO DOOR', 'SLIDING DOOR', 'SLIDING GLASS']):
+            return 'WINDOWS - SLIDING PATIO DOORS'
+        if any(kw in desc_upper for kw in ['WINDOW', 'GLASS', 'GLAZING']):
+            return 'WINDOWS - ALUMINUM'
+        if any(kw in desc_upper for kw in ['WINDOW TREATMENT', 'BLINDS', 'SHADE', 'CURTAIN']):
+            return 'WINDOW TREATMENT'
+
+        # Mirrors and shower doors
+        if any(kw in desc_upper for kw in ['MIRROR', 'SHOWER DOOR', 'TUB DOOR', 'GLASS DOOR']):
+            return 'MIRRORS & SHOWER DOORS'
+
+        # Appliances (add garbage disposal)
+        if any(kw in desc_upper for kw in ['APPLIANCE', 'DISHWASHER', 'RANGE', 'REFRIGERATOR', 'WASHER', 'DRYER', 'GARBAGE DISPOSAL', 'DISPOSAL', 'MICROWAVE', 'STOVE', 'OVEN']):
+            return 'APPLIANCES'
+
+        # Plumbing (specific items)
+        if any(kw in desc_upper for kw in ['PLUMB', 'FAUCET', 'VALVE', 'PIPE', 'DRAIN', 'TRAP', 'SUPPLY LINE', 'WATER LINE', 'SHOWER HEAD', 'TUB', 'BATHTUB']):
+            return 'PLUMBING'
+
+        # Fixtures that aren't in other categories
+        if 'SINK' in desc_upper and 'CABINET' not in desc_upper:
+            return 'PLUMBING'
+        if 'TOILET' in desc_upper and 'ACCESSORY' not in desc_upper:
+            return 'PLUMBING'
+
+        # Electrical
+        if any(kw in desc_upper for kw in ['ELECTRIC', 'OUTLET', 'SWITCH', 'RECEPTACLE', 'WIRE', 'WIRING', 'BREAKER', 'PANEL', 'GFI', 'GFCI']):
+            return 'ELECTRICAL'
+
+        # Light fixtures (separate from electrical)
+        if any(kw in desc_upper for kw in ['LIGHT FIXTURE', 'LIGHTING', 'CHANDELIER', 'CEILING FAN']):
+            return 'LIGHT FIXTURES'
+
+        # HVAC (but not structural drying)
+        if any(kw in desc_upper for kw in ['HVAC', 'AIR CONDITION', 'FURNACE', 'DUCT', 'AC UNIT', 'HEAT PUMP', 'CONDENSER', 'THERMOSTAT']):
+            if 'STRUCTURAL DRYING' not in desc_upper and 'WATER' not in desc_upper:
+                return 'HEAT, VENT & AIR CONDITIONING'
+
+        # PRIORITY 3: Finish materials
+
+        # Cabinetry (skip if it's a deduction note)
+        if any(kw in desc_upper for kw in ['CABINET', 'COUNTER TOP', 'COUNTERTOP', 'VANITY']):
+            return 'CABINETRY'
+
+        # Drywall and texture (texture walls go to drywall)
+        if any(kw in desc_upper for kw in ['DRYWALL', 'SHEETROCK', 'GYPSUM', 'TEXTURE WALL', 'TEXTURE CEILING']):
+            return 'DRYWALL'
+
+        # Interior plaster (separate from drywall)
+        if any(kw in desc_upper for kw in ['PLASTER', 'LATH']):
+            return 'INTERIOR LATH & PLASTER'
+
+        # Stucco
+        if any(kw in desc_upper for kw in ['STUCCO', 'EXTERIOR PLASTER']):
+            return 'STUCCO & EXTERIOR PLASTER'
+
+        # Finish carpentry and trim (includes baseboard)
+        if any(kw in desc_upper for kw in ['BASEBOARD', 'BASE BOARD', 'TRIM', 'MOLDING', 'CASING', 'CROWN', 'WAINSCOT', 'CHAIR RAIL']):
+            return 'FINISH CARPENTRY / TRIMWORK'
+
+        # Finish hardware
+        if any(kw in desc_upper for kw in ['FINISH HARDWARE', 'KNOB', 'HANDLE', 'HINGE', 'PULL']):
+            return 'FINISH HARDWARE'
+
+        # Painting (but not floor perimeter which is walls)
+        if any(kw in desc_upper for kw in ['PAINT', 'PRIMER', 'STAIN', 'WOOD FINISH', 'SEAL']):
+            return 'PAINTING & WOOD WALL FINISHES'
+
+        # Paneling
+        if any(kw in desc_upper for kw in ['PANEL', 'WOOD PANEL', 'WAINSCOTING']):
+            return 'PANELING & WOOD WALL FINISHES'
+
+        # Wallpaper
+        if 'WALLPAPER' in desc_upper:
+            return 'WALLPAPER'
+
+        # PRIORITY 4: Flooring (but not floor perimeter which is a wall calculation)
+
+        # Floor perimeter is a WALL calculation, not flooring
+        if 'FLOOR PERIMETER' in desc_upper or 'PERIMETER' in desc_upper:
+            return 'PAINTING & WOOD WALL FINISHES'
+
+        # Specific floor types (most specific first)
+        if any(kw in desc_upper for kw in ['CERAMIC TILE', 'PORCELAIN TILE']):
+            return 'FLOOR COVERING - CERAMIC TILE'
+        if any(kw in desc_upper for kw in ['CARPET', 'PAD']):
+            return 'FLOOR COVERING - CARPET'
+        if any(kw in desc_upper for kw in ['STONE FLOOR', 'MARBLE FLOOR', 'GRANITE FLOOR', 'TRAVERTINE']):
+            return 'FLOOR COVERING - STONE'
+        if any(kw in desc_upper for kw in ['HARDWOOD', 'WOOD FLOOR', 'OAK FLOOR', 'ENGINEERED WOOD']):
+            return 'FLOOR COVERING - WOOD'
+        if any(kw in desc_upper for kw in ['VINYL', 'LVP', 'LVT', 'LUXURY VINYL']):
+            return 'FLOOR COVERING - VINYL'
+        if any(kw in desc_upper for kw in ['LAMINATE']):
+            return 'FLOOR COVERING - LAMINATE'
+
+        # Generic tile (wall or floor)
+        if any(kw in desc_upper for kw in ['TILE', 'REGROUT']):
+            return 'TILE'
+
+        # Generic flooring (last resort for floor items)
+        if any(kw in desc_upper for kw in ['FLOOR', 'FLOORING']):
+            return 'FLOOR COVERING'
+
+        # PRIORITY 5: Exterior and other
+
+        # Soffit, fascia, gutter
+        if any(kw in desc_upper for kw in ['SOFFIT', 'FASCIA', 'GUTTER', 'DOWNSPOUT']):
+            return 'SOFFIT, FASCIA, & GUTTER'
+
+        # Insulation (check last to avoid catching "insulated door")
+        if any(kw in desc_upper for kw in ['INSULATION', 'INSULATE', 'BATT', 'BLOWN-IN']):
+            return 'INSULATION'
+
+        # Toilet and bath accessories
+        if any(kw in desc_upper for kw in ['TOILET ACCESSORY', 'BATH ACCESSORY', 'TOWEL BAR', 'PAPER HOLDER', 'GRAB BAR']):
+            return 'TOILET & BATH ACCESSORIES'
+
+        # Default category
         return 'GENERAL'
     
+    def _remove_duplicate_line_items(self) -> None:
+        """
+        Remove duplicate line items based on description and quantity.
+        Keeps the first occurrence of each unique item.
+        """
+        seen = set()
+        unique_items = []
+
+        for item in self.line_items:
+            # Create a unique key based on description, quantity, and unit
+            key = (
+                item.get('description', '').strip().upper(),
+                item.get('quantity', 0),
+                item.get('unit', '').upper()
+            )
+
+            if key not in seen:
+                seen.add(key)
+                unique_items.append(item)
+            else:
+                logger.debug(f"Removing duplicate: {item.get('description', '')[:50]}")
+
+        removed_count = len(self.line_items) - len(unique_items)
+        if removed_count > 0:
+            logger.info(f"Removed {removed_count} duplicate line items")
+
+        self.line_items = unique_items
+
     def _build_categories_from_items(self) -> None:
-        """Build category summary"""
+        """Build category summary with unique items"""
         for item in self.line_items:
             category = item.get('category', 'GENERAL')
-            
+
             if category not in self.categories:
                 self.categories[category] = {
                     'name': category,
                     'rcv': 0.0,
                     'depreciation': 0.0,
-                    'acv': 0.0
+                    'acv': 0.0,
+                    'item_count': 0,
+                    'unique_items': []
                 }
-            
+
             self.categories[category]['rcv'] += item['rcv']
             self.categories[category]['depreciation'] += item['depreciation']
             self.categories[category]['acv'] += item['acv']
+            self.categories[category]['item_count'] += 1
+
+            # Store unique item descriptions for the category
+            item_desc = item.get('description', '').strip()
+            if item_desc not in self.categories[category]['unique_items']:
+                self.categories[category]['unique_items'].append(item_desc)
     
+    def _get_category_priority_order(self) -> List[str]:
+        """
+        Define priority order for categories.
+        Cleaning, demolition, and water extraction should appear first.
+        """
+        return [
+            'CLEANING',
+            'GENERAL DEMOLITION',
+            'WATER EXTRACTION & REMEDIATION',
+            'TEMPORARY REPAIRS',
+            # Then all other categories alphabetically
+        ]
+
+    def _sort_categories(self, categories: List[Dict]) -> List[Dict]:
+        """Sort categories by priority order, then alphabetically"""
+        priority_order = self._get_category_priority_order()
+
+        def get_sort_key(category: Dict) -> tuple:
+            name = category.get('name', '')
+            try:
+                # Priority categories come first
+                priority_index = priority_order.index(name)
+                return (0, priority_index, name)
+            except ValueError:
+                # Non-priority categories come after, sorted alphabetically
+                return (1, 0, name)
+
+        return sorted(categories, key=get_sort_key)
+
     def _build_response(self) -> Dict:
-        """Build final response"""
-        
+        """Build final response with sorted categories"""
+
         if not self.line_items:
             return {
                 'success': False,
                 'error': 'No line items found in estimate'
             }
-        
+
         total_rcv = sum(item['rcv'] for item in self.line_items)
         total_depreciation = sum(item['depreciation'] for item in self.line_items)
         total_acv = sum(item['acv'] for item in self.line_items)
-        
+
+        # Sort categories with priority order
+        sorted_categories = self._sort_categories(list(self.categories.values()))
+
         return {
             'success': True,
             'header': self.header_data,
             'line_items': self.line_items,
-            'categories': list(self.categories.values()),
+            'categories': sorted_categories,
             'totals': {
                 'rcv': round(total_rcv, 2),
                 'depreciation': round(total_depreciation, 2),
@@ -394,6 +574,7 @@ class XactimateParser:
             'metadata': {
                 'total_line_items': len(self.line_items),
                 'total_categories': len(self.categories),
-                'rooms': list(set(item['room'] for item in self.line_items if item.get('room')))
+                'rooms': list(set(item['room'] for item in self.line_items if item.get('room'))),
+                'duplicates_removed': getattr(self, '_duplicates_removed', 0)
             }
         }
