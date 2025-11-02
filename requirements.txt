@@ -4,19 +4,15 @@
 Flask==3.0.0
 Flask-CORS==4.0.0
 python-dotenv==1.0.0
+gunicorn==21.2.0
 
-# PDF Processing
-PyMuPDF==1.24
-pdfplumber==0.10.3
-tabula-py==2.9.0
-camelot-py[cv]==0.11.0
+# PDF Processing - Use newer versions with pre-built wheels
+PyMuPDF==1.24.0
+pdfplumber==0.11.0
 
 # Data Processing
 pandas==2.1.4
 numpy==1.26.2
-
-# OCR (if needed for scanned PDFs)
-pytesseract==0.3.10
 
 # OpenAI (optional - for intelligent parsing fallback)
 openai==1.6.1
