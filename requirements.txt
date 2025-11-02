@@ -1,4 +1,4 @@
-# RAP Estimate Generator - Python Dependencies
+# RAP Estimate Generator - Python Dependencies (Railway Compatible)
 
 # Web Framework
 Flask==3.0.0
@@ -6,16 +6,9 @@ Flask-CORS==4.0.0
 python-dotenv==1.0.0
 gunicorn==21.2.0
 
-# PDF Processing - Use newer versions with pre-built wheels
+# PDF Processing
 PyMuPDF==1.24.0
 pdfplumber==0.11.0
-
-# Data Processing
-pandas==2.1.4
-numpy==1.26.2
-
-# OpenAI (optional - for intelligent parsing fallback)
-openai==1.6.1
 
 # HTTP requests
 requests==2.31.0
