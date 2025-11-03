@@ -308,9 +308,9 @@ class XactimateParser:
         """
         desc_upper = description.upper()
 
-        # Skip deduction notes and similar non-item entries
-        skip_patterns = ['DEDUCTION', 'DEDUCT FOR', 'LESS ', 'SUBTRACT', 'CREDIT FOR']
-        if any(pattern in desc_upper for pattern in skip_patterns):
+        # Skip deduction notes and similar non-item entries - but only if they're clearly just notes
+        if 'DEDUCTION FOR' in desc_upper or 'DEDUCT FOR' in desc_upper:
+            # This is just a note, categorize as GENERAL
             return 'GENERAL'
 
         # PRIORITY 1: High-priority categories (specific matches first)
@@ -324,22 +324,20 @@ class XactimateParser:
         if any(kw in desc_upper for kw in ['CLEAN', 'MUCK OUT', 'SANITIZE', 'DISINFECT', 'ANTI-MICROBIAL', 'ANTIMICROBIAL', 'DEODOR']):
             return 'CLEANING'
 
-        # General demolition (check before other categories)
-        if any(kw in desc_upper for kw in ['DEMO', 'DEMOLITION', 'TEAR OUT', 'REMOVE ', 'DISPOSAL', 'DUMPSTER', 'HAUL', 'DEBRIS']):
-            return 'GENERAL DEMOLITION'
+        # PRIORITY 2: Specific trade categories (check BEFORE general demolition)
+        # This prevents "Remove door" from going to demo instead of doors
 
-        # Temporary repairs
-        if any(kw in desc_upper for kw in ['TEMPORARY', 'TARP', 'BOARD UP', 'EMERGENCY']):
-            return 'TEMPORARY REPAIRS'
-
-        # PRIORITY 2: Specific trade categories
-
-        # Doors (check before insulation to catch "insulated door")
-        # Door hardware goes with doors
-        if any(kw in desc_upper for kw in ['DOOR', 'THRESHOLD', 'DOOR HARDWARE', 'DOOR KNOB', 'DOOR HANDLE', 'LOCKSET', 'DEADBOLT']):
+        # Doors (check before demolition - includes "Remove door hardware")
+        if any(kw in desc_upper for kw in ['DOOR', 'THRESHOLD', 'LOCKSET', 'DEADBOLT']):
             return 'DOORS'
 
-        # Windows
+        # Carpet (before general demolition - includes "Remove carpet")
+        if 'CARPET' in desc_upper or 'PAD' in desc_upper:
+            return 'FLOOR COVERING - CARPET'
+
+        # Windows (check window trim specifically for finish carpentry)
+        if 'WINDOW TRIM' in desc_upper or 'WINDOW CASING' in desc_upper:
+            return 'FINISH CARPENTRY / TRIMWORK'
         if any(kw in desc_upper for kw in ['PATIO DOOR', 'SLIDING DOOR', 'SLIDING GLASS']):
             return 'WINDOWS - SLIDING PATIO DOORS'
         if any(kw in desc_upper for kw in ['WINDOW', 'GLASS', 'GLAZING']):
@@ -347,31 +345,32 @@ class XactimateParser:
         if any(kw in desc_upper for kw in ['WINDOW TREATMENT', 'BLINDS', 'SHADE', 'CURTAIN']):
             return 'WINDOW TREATMENT'
 
-        # Mirrors and shower doors
-        if any(kw in desc_upper for kw in ['MIRROR', 'SHOWER DOOR', 'TUB DOOR', 'GLASS DOOR']):
+        # Mirrors and shower doors (includes "Detach & Reset Mirror")
+        if any(kw in desc_upper for kw in ['MIRROR', 'SHOWER DOOR', 'TUB DOOR']):
             return 'MIRRORS & SHOWER DOORS'
 
-        # Appliances (add garbage disposal)
-        if any(kw in desc_upper for kw in ['APPLIANCE', 'DISHWASHER', 'RANGE', 'REFRIGERATOR', 'WASHER', 'DRYER', 'GARBAGE DISPOSAL', 'DISPOSAL', 'MICROWAVE', 'STOVE', 'OVEN']):
+        # Appliances (includes garbage disposal - check before plumbing)
+        if any(kw in desc_upper for kw in ['APPLIANCE', 'DISHWASHER', 'RANGE', 'REFRIGERATOR', 'WASHER', 'DRYER', 'GARBAGE DISPOSAL', 'DISPOSER', 'MICROWAVE', 'STOVE', 'OVEN']):
             return 'APPLIANCES'
 
-        # Plumbing (specific items)
-        if any(kw in desc_upper for kw in ['PLUMB', 'FAUCET', 'VALVE', 'PIPE', 'DRAIN', 'TRAP', 'SUPPLY LINE', 'WATER LINE', 'SHOWER HEAD', 'TUB', 'BATHTUB']):
-            return 'PLUMBING'
+        # Light fixtures (check before electrical)
+        if any(kw in desc_upper for kw in ['LIGHT FIXTURE', 'LIGHTING', 'LIGHT BAR', 'CHANDELIER', 'CEILING FAN']):
+            return 'LIGHT FIXTURES'
+
+        # Electrical (includes junction box)
+        if any(kw in desc_upper for kw in ['ELECTRIC', 'OUTLET', 'SWITCH', 'RECEPTACLE', 'WIRE', 'WIRING', 'BREAKER', 'PANEL', 'GFI', 'GFCI', 'JUNCTION BOX']):
+            return 'ELECTRICAL'
+
+        # Plumbing (specific items - but not if it mentions "water line" in context of insulation)
+        if 'INSULATION' not in desc_upper and 'INSULATE' not in desc_upper:
+            if any(kw in desc_upper for kw in ['PLUMB', 'FAUCET', 'VALVE', 'PIPE', 'DRAIN', 'TRAP', 'SUPPLY LINE', 'SHOWER HEAD', 'TUB', 'BATHTUB']):
+                return 'PLUMBING'
 
         # Fixtures that aren't in other categories
         if 'SINK' in desc_upper and 'CABINET' not in desc_upper:
             return 'PLUMBING'
         if 'TOILET' in desc_upper and 'ACCESSORY' not in desc_upper:
             return 'PLUMBING'
-
-        # Electrical
-        if any(kw in desc_upper for kw in ['ELECTRIC', 'OUTLET', 'SWITCH', 'RECEPTACLE', 'WIRE', 'WIRING', 'BREAKER', 'PANEL', 'GFI', 'GFCI']):
-            return 'ELECTRICAL'
-
-        # Light fixtures (separate from electrical)
-        if any(kw in desc_upper for kw in ['LIGHT FIXTURE', 'LIGHTING', 'CHANDELIER', 'CEILING FAN']):
-            return 'LIGHT FIXTURES'
 
         # HVAC (but not structural drying)
         if any(kw in desc_upper for kw in ['HVAC', 'AIR CONDITION', 'FURNACE', 'DUCT', 'AC UNIT', 'HEAT PUMP', 'CONDENSER', 'THERMOSTAT']):
@@ -380,12 +379,30 @@ class XactimateParser:
 
         # PRIORITY 3: Finish materials
 
-        # Cabinetry (skip if it's a deduction note)
+        # Insulation (check before plumbing to catch "water line" in insulation context)
+        if any(kw in desc_upper for kw in ['INSULATION', 'INSULATE', 'BATT', 'BLOWN-IN', 'R6', 'R11', 'R13', 'R19']):
+            return 'INSULATION'
+
+        # Soffit, fascia, gutter (check before general demolition)
+        if any(kw in desc_upper for kw in ['GUTTER', 'DOWNSPOUT', 'SOFFIT', 'FASCIA']):
+            return 'SOFFIT, FASCIA, & GUTTER'
+
+        # NOW check general demolition (after all specific categories)
+        if any(kw in desc_upper for kw in ['DEMO', 'DEMOLITION', 'TEAR OUT', 'DUMPSTER', 'HAUL', 'DEBRIS']):
+            return 'GENERAL DEMOLITION'
+
+        # Temporary repairs
+        if any(kw in desc_upper for kw in ['TEMPORARY', 'TARP', 'BOARD UP', 'EMERGENCY']):
+            return 'TEMPORARY REPAIRS'
+
+        # Cabinetry and closet organizers
+        if any(kw in desc_upper for kw in ['CLOSET ORGANIZER', 'CLOSET SYSTEM']):
+            return 'CABINETRY'
         if any(kw in desc_upper for kw in ['CABINET', 'COUNTER TOP', 'COUNTERTOP', 'VANITY']):
             return 'CABINETRY'
 
-        # Drywall and texture (texture walls go to drywall)
-        if any(kw in desc_upper for kw in ['DRYWALL', 'SHEETROCK', 'GYPSUM', 'TEXTURE WALL', 'TEXTURE CEILING']):
+        # Drywall (includes water rock/greenboard, texture)
+        if any(kw in desc_upper for kw in ['DRYWALL', 'SHEETROCK', 'GYPSUM', 'TEXTURE WALL', 'TEXTURE CEILING', 'WATER ROCK', 'GREENBOARD', 'GREEN BOARD']):
             return 'DRYWALL'
 
         # Interior plaster (separate from drywall)
@@ -436,8 +453,12 @@ class XactimateParser:
         if any(kw in desc_upper for kw in ['LAMINATE']):
             return 'FLOOR COVERING - LAMINATE'
 
+        # Regrout tile specifically (check before generic flooring)
+        if 'REGROUT' in desc_upper and 'TILE' in desc_upper:
+            return 'TILE'
+
         # Generic tile (wall or floor)
-        if any(kw in desc_upper for kw in ['TILE', 'REGROUT']):
+        if 'TILE' in desc_upper:
             return 'TILE'
 
         # Generic flooring (last resort for floor items)
