@@ -270,21 +270,31 @@ class XactimateParser:
         """Determine if line is a room header"""
         if not line or len(line) > 50:
             return False
-        
+
+        line_upper = line.upper()
+
+        # CRITICAL: Exclude "Opens into" lines - these are NOT room names
+        exclude_patterns = [
+            'OPENS INTO', 'DESCRIPTION', 'QUANTITY', 'UNIT', 'PRICE',
+            'HEIGHT:', 'TOTALS:', 'PAGE:', 'SF', 'LF', 'SY',
+            'WALL', 'CEILING', 'FLOOR', 'DOOR', 'WINDOW',
+            'MISSING WALL', 'GOES TO', 'GPS CLAIMS', 'RCV', 'DEPREC'
+        ]
+
+        if any(pattern in line_upper for pattern in exclude_patterns):
+            return False
+
+        # Room keywords - look for these ONLY if exclude patterns don't match
         room_keywords = [
             'EXTERIOR', 'ENTRY', 'FOYER', 'KITCHEN', 'BATHROOM', 'BEDROOM',
             'LIVING', 'DINING', 'GARAGE', 'LAUNDRY', 'MAIN LEVEL', 'BASEMENT',
             'HALLWAY', 'OFFICE', 'DEN', 'CLOSET', 'UTILITY', 'PANTRY',
-            'MASTER', 'GUEST', 'FAMILY ROOM'
+            'MASTER', 'GUEST', 'FAMILY ROOM', 'BACK ROOM', 'FRONT ROOM'
         ]
-        
-        line_upper = line.upper()
-        
+
         if any(keyword in line_upper for keyword in room_keywords):
-            exclude = ['DESCRIPTION', 'QUANTITY', 'UNIT', 'PRICE', 'HEIGHT:']
-            if not any(x in line_upper for x in exclude):
-                return True
-        
+            return True
+
         return False
     
     def _parse_number(self, value: str) -> float:

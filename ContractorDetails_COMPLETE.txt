@@ -1,0 +1,29 @@
+INSTRUCTIONS:
+===========
+1. Copy the code below
+2. Replace the entire contents of: C:\Users\cfadj\rap-frontend\src\components\ContractorDetails.jsx
+3. Save the file
+4. The dev server should auto-reload
+5. Test the PDF export - it will now show ALL line items with distributed pricing!
+
+WHAT IT DOES:
+============
+- Takes contractor pricing per category
+- Distributes it proportionally across ALL line items
+- Generates PDF that looks like an estimate with every line item
+- Shows Original vs Revised pricing side-by-side
+- Calculates adjustments per line and per category
+
+FORMAT:
+=======
+PDF will have:
+- Claim header
+- Contractor info
+- All categories with their line items in a table
+- Columns: # | Description | Qty/Unit | Orig Unit $ | New Unit $ | Original RCV | Revised RCV
+- Category subtotals
+- Grand totals
+
+====================================
+COPY BELOW THIS LINE:
+====================================
