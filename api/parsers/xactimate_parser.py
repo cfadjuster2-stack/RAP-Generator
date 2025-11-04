@@ -126,30 +126,37 @@ class XactimateParser:
     
     def _extract_line_items_gps_format(self, text: str) -> None:
         """Extract line items - handles both single-line and multi-line formats"""
-        
+
         lines = text.split('\n')
+
+        # Pre-scan to identify actual rooms (from Totals: lines)
+        main_rooms = self._identify_main_rooms(text)
+        logger.debug(f"Identified main rooms: {main_rooms}")
+
         i = 0
         current_room = None
-        
+
         while i < len(lines):
             line = lines[i].strip()
-            
-            if self._is_room_header_gps(line):
-                current_room = line
+
+            # Check if this is a room header
+            detected_room = self._detect_room_header(line, lines, i, main_rooms)
+            if detected_room:
+                current_room = detected_room
                 logger.debug(f"Found room: {current_room}")
-            
+
             item_pattern = r'^(\d+[a-z]?)\.\s+(.+)'
             item_match = re.match(item_pattern, line)
-            
+
             if item_match:
                 line_num = item_match.group(1)
                 description = item_match.group(2).strip()
-                
+
                 if i + 1 < len(lines):
                     next_line = lines[i + 1].strip()
-                    
+
                     single_pattern = r'^\d+\s+[\d,.]+\s+[A-Z]{2,3}\s+[\d,.]+\s+[\d,.]+\s+\([\d,.]+\)\s+[\d,.]+$'
-                    
+
                     if re.search(single_pattern, next_line):
                         try:
                             self._parse_single_line_format(line_num, description, next_line, current_room)
@@ -162,9 +169,9 @@ class XactimateParser:
                                 self.line_items.append(result)
                         except Exception as e:
                             logger.error(f"Error parsing multi-line format: {str(e)}")
-            
+
             i += 1
-        
+
         logger.info(f"Extracted {len(self.line_items)} line items")
     
     def _parse_single_line_format(self, line_num: str, description: str, data_line: str, room: str) -> None:
@@ -266,6 +273,184 @@ class XactimateParser:
         
         return None
     
+    def _identify_main_rooms(self, text: str) -> List[str]:
+        """
+        Pre-scan the text to identify actual room names from 'Totals:' lines.
+        Filters out subrooms like 'MB Shower', 'MB Tub', 'Right bath shower'
+        """
+        # Find all "Totals: [RoomName]" patterns
+        totals_pattern = r'Totals:\s+(.+?)(?:\n|$)'
+        matches = re.findall(totals_pattern, text, re.IGNORECASE)
+
+        all_rooms = [room.strip() for room in matches if room.strip()]
+
+        # First pass: remove obvious non-rooms and subrooms
+        filtered_rooms = []
+        subroom_keywords = ['shower', 'tub', 'bath shower']
+
+        for room in all_rooms:
+            room_lower = room.lower()
+
+            # Skip insured name pattern (all caps with underscores)
+            if room.isupper() and '_' in room and 'ROOM' not in room:
+                continue
+
+            # Skip if it contains subroom keywords
+            if any(keyword in room_lower for keyword in subroom_keywords):
+                continue
+
+            # Skip if it's a multi-room combined name
+            if ',' in room:
+                continue
+
+            # Skip very short room names (likely abbreviations when full name exists)
+            if len(room) < 4:
+                continue
+
+            filtered_rooms.append(room)
+
+        # Second pass: de-duplicate similar rooms (prefer longer/more specific names)
+        main_rooms = []
+        for room in filtered_rooms:
+            room_lower = room.lower()
+
+            # Check if a longer version of this room exists
+            has_longer_version = False
+            for other_room in filtered_rooms:
+                other_lower = other_room.lower()
+                # If this room is a substring of another room and shorter, skip it
+                if room != other_room and room_lower in other_lower and len(room) < len(other_room):
+                    # But keep both if they're clearly different (e.g., "Bathroom" vs "Bathroom Left")
+                    if not (room_lower + ' ') in other_lower:
+                        continue
+                    has_longer_version = True
+                    break
+
+            if not has_longer_version:
+                main_rooms.append(room)
+
+        # Remove exact duplicates (case-insensitive)
+        seen = set()
+        unique_rooms = []
+        for room in main_rooms:
+            room_key = room.lower()
+            if room_key not in seen:
+                seen.add(room_key)
+                unique_rooms.append(room)
+
+        return unique_rooms
+
+    def _map_subroom_to_parent(self, room_name: str, main_rooms: List[str]) -> str:
+        """
+        Map subroom names to their parent room.
+        E.g., "Right bath shower" -> "right bath"
+              "MB Shower" -> "master bath"
+              "shower" (generic) -> find best match based on context
+        """
+        if not room_name:
+            return room_name
+
+        room_lower = room_name.lower()
+
+        # Handle abbreviations first
+        abbreviation_map = {
+            'mb': ['master bath', 'master bathroom'],
+            'mr': ['master bedroom'],
+        }
+
+        # Check for abbreviated room names (e.g., "MB Shower")
+        words = room_lower.split()
+        if words and len(words[0]) <= 3:  # Likely an abbreviation
+            abbrev = words[0]
+            if abbrev in abbreviation_map:
+                # Find which expanded version exists in main_rooms
+                for expanded in abbreviation_map[abbrev]:
+                    for main_room in main_rooms:
+                        if expanded in main_room.lower():
+                            return main_room
+
+        # Check if the main room name is literally contained in this room name
+        for main_room in main_rooms:
+            main_lower = main_room.lower()
+            if main_lower in room_lower and len(main_room) < len(room_name):
+                return main_room
+
+        # For generic names like "Shower", "Tub", try to find a bathroom main room
+        generic_subrooms = ['shower', 'tub']
+        if room_lower in generic_subrooms:
+            # Find any bathroom in main_rooms (prefer "master bath")
+            for main_room in main_rooms:
+                if 'master bath' in main_room.lower():
+                    return main_room
+            # Otherwise find any bath
+            for main_room in main_rooms:
+                if 'bath' in main_room.lower():
+                    return main_room
+
+        return room_name
+
+    def _detect_room_header(self, line: str, lines: List[str], index: int, main_rooms: List[str]) -> Optional[str]:
+        """
+        Detect if current line is a room header using context and main rooms list.
+        Handles:
+        - Standard room names (Entry/Foyer, Dining Room, etc.)
+        - CONTINUED sections (maps to parent room)
+        - Level headers before room names
+        - Subrooms (maps to parent, e.g., "MB Shower" -> "master bath")
+        """
+        if not line or len(line) > 60:
+            return None
+
+        line_upper = line.upper().strip()
+
+        # Handle "CONTINUED - RoomName" format
+        continued_pattern = r'^CONTINUED\s*[-–]\s*(.+)$'
+        continued_match = re.match(continued_pattern, line, re.IGNORECASE)
+        if continued_match:
+            parent_room = continued_match.group(1).strip()
+            # Map to the actual room name (case-insensitive match)
+            for room in main_rooms:
+                if room.upper() == parent_room.upper():
+                    return room
+            # Try mapping subroom to parent
+            return self._map_subroom_to_parent(parent_room, main_rooms)
+
+        # Exclude patterns that are definitely not rooms
+        exclude_patterns = [
+            'OPENS INTO', 'DESCRIPTION', 'QUANTITY', 'UNIT', 'PRICE',
+            'HEIGHT:', 'TOTALS:', 'PAGE:', r'\d+\s*SF', r'\d+\s*LF', r'\d+\s*SY',
+            'WALL', 'CEILING', 'FLOOR', 'DOOR', 'WINDOW',
+            'MISSING WALL', 'GOES TO', 'GPS CLAIMS', 'RCV', 'DEPREC',
+            'Main Level', 'Basement', 'Upper Level',  # Level headers, not rooms
+            r'^\d+\'\s*\d*\"?',  # Dimensions like "8'" or "2' 6""
+        ]
+
+        for pattern in exclude_patterns:
+            if re.search(pattern, line_upper):
+                return None
+
+        # Check if line matches any main room (case-insensitive)
+        for room in main_rooms:
+            if line.strip().upper() == room.upper():
+                # Look ahead to confirm it's a room header (should be followed by Height: or measurements)
+                if index + 1 < len(lines):
+                    next_line = lines[index + 1].strip()
+                    if 'Height:' in next_line or re.search(r'\d+\'\s*\d*\"', next_line):
+                        return room
+
+        # Check if this might be a subroom that should map to a parent
+        # Look for patterns like "MB Shower", "Right bath shower", etc.
+        room_keywords = ['SHOWER', 'TUB', 'BATH SHOWER']
+        if any(keyword in line_upper for keyword in room_keywords):
+            # Confirm it's a room header by looking ahead
+            if index + 1 < len(lines):
+                next_line = lines[index + 1].strip()
+                if 'Height:' in next_line or re.search(r'\d+\'\s*\d*\"', next_line):
+                    # Map to parent room
+                    return self._map_subroom_to_parent(line.strip(), main_rooms)
+
+        return None
+
     def _is_room_header_gps(self, line: str) -> bool:
         """Determine if line is a room header"""
         if not line or len(line) > 50:
